@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
+import time
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 from .config import AppConfig
 from .models import MarketWindow, OrderResult, Signal, SizeDecision
+
+LIVE_ENV_VARS = (
+    "POLYMARKET_PRIVATE_KEY",
+    "POLYMARKET_API_KEY",
+    "POLYMARKET_API_SECRET",
+    "POLYMARKET_API_PASSPHRASE",
+)
+
+
+@dataclass(slots=True, frozen=True)
+class ExecutorDryRunResult:
+    ok: bool
+    variant: str | None
+    message: str
+    timings_ms: dict[str, float]
+
+
+@dataclass(slots=True, frozen=True)
+class _OrderApi:
+    variant: str
+    market_order_args: Any
+    partial_options: Any
+    order_type: Any
+    buy_side: Any
 
 
 class PaperExecutor:
@@ -136,11 +163,134 @@ def executor_for_config(cfg: AppConfig) -> PaperExecutor | LiveExecutor:
     return PaperExecutor()
 
 
+def live_executor_dry_run(cfg: AppConfig, market: MarketWindow) -> ExecutorDryRunResult:
+    """Build and sign a live CLOB order without submitting it."""
+    timings: dict[str, float] = {}
+    total_started = time.perf_counter_ns()
+
+    import_started = time.perf_counter_ns()
+    try:
+        api = _import_order_api()
+    except ImportError as exc:
+        timings["import"] = _elapsed_ms(import_started)
+        timings["total"] = _elapsed_ms(total_started)
+        return ExecutorDryRunResult(False, None, f"py-clob-client unavailable: {exc}", timings)
+    timings["import"] = _elapsed_ms(import_started)
+
+    missing = missing_live_env_vars()
+    if missing:
+        timings["total"] = _elapsed_ms(total_started)
+        return ExecutorDryRunResult(
+            False,
+            api.variant,
+            f"variant={api.variant}; missing {', '.join(missing)}; no order submitted",
+            timings,
+        )
+
+    token_id = market.tokens.get("Up") or next(iter(market.tokens.values()), None)
+    if not token_id:
+        timings["total"] = _elapsed_ms(total_started)
+        return ExecutorDryRunResult(False, api.variant, "market has no token id; no order submitted", timings)
+
+    client_started = time.perf_counter_ns()
+    try:
+        live = LiveExecutor(cfg)
+        client = live._create_v2_client() if api.variant == "v2" else live._create_v1_client()
+    except Exception as exc:
+        timings["client"] = _elapsed_ms(client_started)
+        timings["total"] = _elapsed_ms(total_started)
+        return ExecutorDryRunResult(
+            False,
+            api.variant,
+            f"variant={api.variant}; client construction failed: {exc}; no order submitted",
+            timings,
+        )
+    timings["client"] = _elapsed_ms(client_started)
+
+    args_started = time.perf_counter_ns()
+    amount_usd = max(5.0, cfg.risk.min_order_usd, market.min_order_size)
+    price = _round_buy_limit(min(0.99, cfg.risk.max_entry_price), market.tick_size)
+    order_args = api.market_order_args(
+        token_id=token_id,
+        amount=amount_usd,
+        side=api.buy_side,
+        price=price,
+        order_type=api.order_type.FOK,
+    )
+    options = api.partial_options(tick_size=str(market.tick_size), neg_risk=market.neg_risk)
+    timings["args"] = _elapsed_ms(args_started)
+
+    sign_started = time.perf_counter_ns()
+    try:
+        signed = client.create_market_order(order_args, options=options)
+    except Exception as exc:
+        timings["sign"] = _elapsed_ms(sign_started)
+        timings["total"] = _elapsed_ms(total_started)
+        return ExecutorDryRunResult(
+            False,
+            api.variant,
+            f"variant={api.variant}; signing/payload dry-run failed: {exc}; no order submitted",
+            timings,
+        )
+    timings["sign"] = _elapsed_ms(sign_started)
+    timings["total"] = _elapsed_ms(total_started)
+
+    signed_type = type(signed).__name__
+    return ExecutorDryRunResult(
+        True,
+        api.variant,
+        (
+            f"variant={api.variant}; token={token_id[:10]}...; amount_usd={amount_usd:.2f}; "
+            f"price={price:.4f}; signed_type={signed_type}; no order submitted; "
+            + _format_timings(timings)
+        ),
+        timings,
+    )
+
+
+def missing_live_env_vars() -> list[str]:
+    return [name for name in LIVE_ENV_VARS if not os.getenv(name)]
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"{name} is required for live execution")
     return value
+
+
+def _import_order_api() -> _OrderApi:
+    try:
+        module = importlib.import_module("py_clob_client_v2")
+        constants = importlib.import_module("py_clob_client_v2.order_builder.constants")
+        return _OrderApi(
+            variant="v2",
+            market_order_args=module.MarketOrderArgs,
+            partial_options=module.PartialCreateOrderOptions,
+            order_type=module.OrderType,
+            buy_side=constants.BUY,
+        )
+    except ImportError as v2_exc:
+        try:
+            clob_types = importlib.import_module("py_clob_client.clob_types")
+            constants = importlib.import_module("py_clob_client.order_builder.constants")
+            return _OrderApi(
+                variant="v1",
+                market_order_args=clob_types.MarketOrderArgs,
+                partial_options=clob_types.PartialCreateOrderOptions,
+                order_type=clob_types.OrderType,
+                buy_side=constants.BUY,
+            )
+        except ImportError as v1_exc:
+            raise ImportError(f"v2 import failed ({v2_exc}); v1 import failed ({v1_exc})") from v1_exc
+
+
+def _elapsed_ms(started_ns: int) -> float:
+    return (time.perf_counter_ns() - started_ns) / 1_000_000.0
+
+
+def _format_timings(timings: dict[str, float]) -> str:
+    return ", ".join(f"{name}_ms={value:.3f}" for name, value in timings.items())
 
 
 def _round_buy_limit(price: float, tick_size: float) -> float:

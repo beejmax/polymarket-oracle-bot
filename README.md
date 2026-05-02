@@ -11,7 +11,7 @@ and all three live confirmation flags are true.
 ## Install
 
 ```bash
-cd integrations/polymarket_oracle_bot
+cd ~/polymarket-oracle-bot
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install -e .
@@ -35,6 +35,13 @@ websocket access without placing orders:
 
 ```bash
 poly-oracle-bot --config config.toml --db data/bot.sqlite3 --preflight
+```
+
+To also test the live executor import/client/signing path without submitting an
+order, install the live extra and provide Polymarket credentials, then run:
+
+```bash
+poly-oracle-bot --config config.toml --db data/bot.sqlite3 --executor-preflight
 ```
 
 After a paper run, summarize telemetry:

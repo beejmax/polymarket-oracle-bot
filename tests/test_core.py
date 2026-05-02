@@ -5,9 +5,10 @@ import unittest
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from poly_oracle_bot.config import AppConfig, TradingConfig
-from poly_oracle_bot.execution import _is_immediate_fill
+from poly_oracle_bot.execution import LiveExecutor, _OrderApi, _is_immediate_fill, live_executor_dry_run
 from poly_oracle_bot.feeds import ChainlinkRTDSFeed
 from poly_oracle_bot.models import MarketWindow, Position, PriceTick, Quote
 from poly_oracle_bot.orderbook import OrderBookState
@@ -209,6 +210,42 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(_is_immediate_fill({"success": True, "status": "live"}))
         self.assertFalse(_is_immediate_fill({"success": False, "status": "matched"}))
 
+    def test_executor_dry_run_requires_credentials_before_client(self) -> None:
+        api = _fake_order_api()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("poly_oracle_bot.execution._import_order_api", return_value=api),
+            patch.object(LiveExecutor, "_create_v2_client", side_effect=AssertionError("should not build client")),
+        ):
+            result = live_executor_dry_run(AppConfig(), _market())
+        self.assertFalse(result.ok)
+        self.assertIn("missing POLYMARKET_PRIVATE_KEY", result.message)
+        self.assertIn("no order submitted", result.message)
+
+    def test_executor_dry_run_signs_without_posting(self) -> None:
+        class FakeClient:
+            def create_market_order(self, order_args: object, options: object | None = None) -> dict[str, bool]:
+                return {"signed": True}
+
+            def post_order(self, *_args: object, **_kwargs: object) -> None:
+                raise AssertionError("dry-run must not post")
+
+        env = {
+            "POLYMARKET_PRIVATE_KEY": "0x" + "1" * 64,
+            "POLYMARKET_API_KEY": "api-key",
+            "POLYMARKET_API_SECRET": "api-secret",
+            "POLYMARKET_API_PASSPHRASE": "api-passphrase",
+        }
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("poly_oracle_bot.execution._import_order_api", return_value=_fake_order_api()),
+            patch.object(LiveExecutor, "_create_v2_client", return_value=FakeClient()),
+        ):
+            result = live_executor_dry_run(AppConfig(), _market())
+        self.assertTrue(result.ok)
+        self.assertIn("signed_type=dict", result.message)
+        self.assertIn("no order submitted", result.message)
+
 
 def _market() -> MarketWindow:
     return MarketWindow(
@@ -226,6 +263,27 @@ def _market() -> MarketWindow:
         active=True,
         closed=False,
         accepting_orders=True,
+    )
+
+
+def _fake_order_api() -> _OrderApi:
+    class FakeOrderType:
+        FOK = "FOK"
+
+    class FakeOrderArgs:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeOptions:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    return _OrderApi(
+        variant="v2",
+        market_order_args=FakeOrderArgs,
+        partial_options=FakeOptions,
+        order_type=FakeOrderType,
+        buy_side="BUY",
     )
 
 

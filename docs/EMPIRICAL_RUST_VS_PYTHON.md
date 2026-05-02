@@ -84,3 +84,9 @@ Reconsider Rust for live execution if any of these are measured:
 
 Near-term priority is not Rust. It is direct measurement of live order
 sign/build/submit latency and correctness of reconciliation.
+
+Use the no-submit executor preflight before any live run:
+
+```bash
+poly-oracle-bot --config config.toml --db data/bot.sqlite3 --executor-preflight
+```
