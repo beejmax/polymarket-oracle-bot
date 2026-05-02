@@ -30,6 +30,26 @@ cp config.example.toml config.toml
 poly-oracle-bot --config config.toml --db data/bot.sqlite3
 ```
 
+Preflight checks config, writable paths, Gamma discovery, RTDS, and CLOB market
+websocket access without placing orders:
+
+```bash
+poly-oracle-bot --config config.toml --db data/bot.sqlite3 --preflight
+```
+
+After a paper run, summarize telemetry:
+
+```bash
+scripts/analyze_telemetry.py data/events.jsonl
+```
+
+To compare local Python and Rust signal-loop overhead:
+
+```bash
+PYTHONPATH=src python3 scripts/bench_hot_path.py --iterations 200000
+cargo run --release -q -p oracle-bot-rs --bin bench_hot_path -- --iterations 200000
+```
+
 The dashboard prints prices, active markets, open positions, and recent trades.
 SQLite tables record markets, Chainlink ticks, signals, trades, and operational
 events.
