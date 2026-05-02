@@ -87,6 +87,8 @@ class Storage:
                     condition_id TEXT NOT NULL,
                     outcome TEXT NOT NULL,
                     token_id TEXT NOT NULL,
+                    start_ts INTEGER,
+                    end_ts INTEGER,
                     shares REAL NOT NULL,
                     entry_price REAL NOT NULL,
                     cost_usd REAL NOT NULL,
@@ -112,6 +114,14 @@ class Storage:
                 );
                 """
             )
+            self._ensure_column_locked("trades", "start_ts", "INTEGER")
+            self._ensure_column_locked("trades", "end_ts", "INTEGER")
+
+    def _ensure_column_locked(self, table: str, column: str, declaration: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(str(row["name"]) == column for row in rows):
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def insert_tick(self, tick: PriceTick) -> None:
         with self._lock:
@@ -205,10 +215,10 @@ class Storage:
                 """
                 INSERT INTO trades(
                     trade_id, opened_at_ms, mode, asset, slug, condition_id,
-                    outcome, token_id, shares, entry_price, cost_usd, order_id,
+                    outcome, token_id, start_ts, end_ts, shares, entry_price, cost_usd, order_id,
                     status, price_to_beat, entry_oracle_price
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     position.trade_id,
@@ -219,6 +229,8 @@ class Storage:
                     position.condition_id,
                     position.outcome,
                     position.token_id,
+                    position.start_ts,
+                    position.end_ts,
                     position.shares,
                     position.entry_price,
                     position.cost_usd,
@@ -229,6 +241,49 @@ class Storage:
                 ),
             )
             self._conn.commit()
+
+    def load_open_positions(self) -> list[Position]:
+        with self._lock:
+            rows = list(
+                self._conn.execute(
+                    """
+                    SELECT *
+                    FROM trades
+                    WHERE status = 'open'
+                    ORDER BY opened_at_ms ASC
+                    """
+                ).fetchall()
+            )
+        positions: list[Position] = []
+        for row in rows:
+            start_ts = row["start_ts"] if "start_ts" in row.keys() else None
+            end_ts = row["end_ts"] if "end_ts" in row.keys() else None
+            if start_ts is None or end_ts is None:
+                start_ts, end_ts = _infer_window_from_slug(str(row["slug"]))
+            if start_ts is None or end_ts is None:
+                continue
+            positions.append(
+                Position(
+                    trade_id=str(row["trade_id"]),
+                    mode=row["mode"],
+                    asset=str(row["asset"]),
+                    slug=str(row["slug"]),
+                    condition_id=str(row["condition_id"]),
+                    outcome=row["outcome"],
+                    token_id=str(row["token_id"]),
+                    start_ts=int(start_ts),
+                    end_ts=int(end_ts),
+                    shares=float(row["shares"]),
+                    entry_price=float(row["entry_price"]),
+                    cost_usd=float(row["cost_usd"]),
+                    order_id=row["order_id"],
+                    price_to_beat=float(row["price_to_beat"]),
+                    entry_oracle_price=float(row["entry_oracle_price"]),
+                    opened_at_ms=int(row["opened_at_ms"]),
+                    status=str(row["status"]),
+                )
+            )
+        return positions
 
     def close_trade(
         self,
@@ -305,3 +360,18 @@ class Storage:
                 ).fetchall()
             )
 
+
+def _infer_window_from_slug(slug: str) -> tuple[int | None, int | None]:
+    try:
+        start_ts = int(slug.rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        return None, None
+    if "-5m-" in slug:
+        seconds = 5 * 60
+    elif "-15m-" in slug:
+        seconds = 15 * 60
+    elif "-1h-" in slug:
+        seconds = 60 * 60
+    else:
+        seconds = 15 * 60
+    return start_ts, start_ts + seconds

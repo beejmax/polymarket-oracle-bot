@@ -131,6 +131,35 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(storage.realized_pnl_since(0), 0.0)
             storage.close()
 
+    def test_storage_load_open_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Storage(Path(tmp) / "bot.sqlite3")
+            position = Position(
+                trade_id="trade-1",
+                mode="paper",
+                asset="BTC",
+                slug="btc-updown-15m-1777738500",
+                condition_id="0xabc",
+                outcome="Up",
+                token_id="up-token",
+                start_ts=1777738500,
+                end_ts=1777739400,
+                shares=10.0,
+                entry_price=0.55,
+                cost_usd=5.5,
+                order_id="paper-order",
+                price_to_beat=100.0,
+                entry_oracle_price=101.0,
+                opened_at_ms=1777738510000,
+            )
+            storage.open_trade(position)
+            recovered = storage.load_open_positions()
+            self.assertEqual(len(recovered), 1)
+            self.assertEqual(recovered[0].trade_id, "trade-1")
+            self.assertEqual(recovered[0].start_ts, 1777738500)
+            self.assertEqual(recovered[0].end_ts, 1777739400)
+            storage.close()
+
     def test_jsonl_recorder(self) -> None:
         async def run(path: Path) -> None:
             cfg = AppConfig().telemetry

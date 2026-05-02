@@ -42,7 +42,10 @@ class Bot:
         self.latest_ticks: dict[str, PriceTick] = {}
         self.recent_ticks: dict[str, list[PriceTick]] = {}
         self.markets: dict[str, MarketWindow] = {}
-        self.positions: dict[str, Position] = {}
+        self.positions: dict[str, Position] = {
+            f"{position.asset}:{position.start_ts}": position
+            for position in self.storage.load_open_positions()
+        }
         self._last_logged_signal: dict[tuple[str, str, str, str], int] = {}
 
     async def run(self) -> None:
