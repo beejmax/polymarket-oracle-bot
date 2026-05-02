@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-oracle-bot"
+version = "0.1.0"
+description = "Async Polymarket 15m crypto UP/DOWN oracle-lag trading bot"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "websockets>=12",
+]
+
+[project.optional-dependencies]
+live = [
+  "py-clob-client>=0.34.6",
+  "py-clob-client-v2>=1.0.0",
+]
+
+[project.scripts]
+poly-oracle-bot = "poly_oracle_bot.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

@@ -1,0 +1,8 @@
+.venv/
+data/
+config.toml
+*.sqlite3
+*.sqlite3-*
+__pycache__/
+*.py[cod]
+target/
